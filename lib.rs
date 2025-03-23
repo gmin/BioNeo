@@ -1,6 +1,7 @@
 pub mod constants;
 pub mod structures;
 pub mod tools;
+pub mod errors;
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
@@ -9,6 +10,8 @@ use constants::*;
 use structures::{
     cancel_staking::*, claim_rewards::*, enter_staking::*, initialize_staking::*,
     initialize_user::*, Staked, StakingInstance, StakingPool, User,
+    lp_staking::*,
+    nft_staking::*,
 };
 use tools::{generate_release_timestamps, test_generate_release_timestamp};
 
@@ -163,402 +166,80 @@ pub fn calculate_referral_reward(user: &User, amount: u64) -> u64 {
 }
 
 #[program]
-pub mod gdtc_staking {
+pub mod bioneo {
     use super::*;
+
+    // LP 质押相关指令
     pub fn initialize_staking(
         ctx: Context<InitializeStaking>,
-        reward_per_sec_3_months: u64,
-        reward_per_sec_6_months: u64,
-        reward_per_sec_12_months: u64,
-        start_reward_timestamp: u64,
+        reward_token_per_sec: u64,
     ) -> Result<()> {
-        let staking_instance = &mut ctx.accounts.staking_instance;
-
-        // 设置基础字段
-        staking_instance.authority = ctx.accounts.authority.key();
-        staking_instance.reward_token_mint = ctx.accounts.reward_token_mint.key();
-        staking_instance.staking_token_mint = ctx.accounts.staking_token_mint.key();
-        staking_instance.lp_token_account = ctx.accounts.lp_token_account.key();
-        // 初始化 3 个质押池
-        staking_instance.pools = [
-            StakingPool {
-                stake_type: 0, // 3 个月
-                reward_token_per_sec: reward_per_sec_3_months,
-                accumulated_reward_per_share: 0,
-                last_reward_timestamp: start_reward_timestamp,
-                total_shares: 0,
-            },
-            StakingPool {
-                stake_type: 1, // 6 个月
-                reward_token_per_sec: reward_per_sec_6_months,
-                accumulated_reward_per_share: 0,
-                last_reward_timestamp: start_reward_timestamp,
-                total_shares: 0,
-            },
-            StakingPool {
-                stake_type: 2, // 12 个月
-                reward_token_per_sec: reward_per_sec_12_months,
-                accumulated_reward_per_share: 0,
-                last_reward_timestamp: start_reward_timestamp,
-                total_shares: 0,
-            },
-        ];
-        Ok(())
+        instructions::lp_staking::initialize::handler(ctx, reward_token_per_sec)
     }
 
     pub fn initialize_user(ctx: Context<InitializeUser>) -> Result<()> {
-        let user_instance = &mut ctx.accounts.user_instance;
-        let staking_instance = &mut ctx.accounts.staking_instance;
-        if staking_instance.reward_token_mint != ctx.accounts.user_superior_token_account.mint {
-            return Err(ErrorCode::MintAccountIsNotMatch.into());
-        }
-        user_instance.user_address = ctx.accounts.authority.key();
-        // 初始化 User 结构体的字段
-        user_instance.total_deposited_amount = 0; // 初始化为 0，表示用户没有存入任何质押
-        user_instance.user_superior_token_account = ctx.accounts.user_superior_token_account.key(); // 设置上级 Token 账户地址
-        user_instance.isinit = true; // 标记为已初始化
-
-        // 初始化 staked_info 数组，所有的质押池信息都设为默认值
-        for staked in user_instance.staked_info.iter_mut() {
-            staked.deposited_amount = 0; // 每个质押池的存入金额初始化为 0
-            staked.reward_debt = 0; // 奖励债务初始化为 0
-            staked.accumulated_reward = 0; // 累计奖励初始化为 0
-            staked.is_staked = false; // 初始时没有质押
-            staked.stake_type = 0; // 默认的质押类型为 0 (3个月质押)
-            staked.stake_start_time = 0; // 初始质押开始时间为 0
-            staked.stake_end_time = 0; // 初始质押结束时间为 0
-            staked.receivedReward = 0; //初始化已领取收益
-            staked.can_cancel_stake = false;
-        }
-
-        Ok(())
+        instructions::lp_staking::initialize_user::handler(ctx)
     }
 
-    // 0 = 3m,1= 6m,2= 12m;
     pub fn enter_staking(
         ctx: Context<EnterStaking>,
-        lp_staking_number: u64, // 用户要质押的 LP Token 数量
-        stake_type: u64,        // 用户选择的质押池类型
-        staked_info_index: u64, // 用户选择的 staked_info 索引
+        amount: u64,
+        stake_type: u64,
+        referrer: Option<Pubkey>,
     ) -> Result<()> {
-        // 获取账户实例
-        let staking_instance = &mut ctx.accounts.staking_instance;
-        let user_instance = &mut ctx.accounts.user_instance;
-        let user_lp_token_account = &ctx.accounts.user_lp_token_account;
-        let gdtc_lp_in_account = &ctx.accounts.gdtc_lp_in_account;
-
-        let clock = Clock::get().expect("Failed to get clock");
-
-        // 检查用户 LP Token 账户的 Mint 是否与质押池的 Mint 匹配
-        if staking_instance.staking_token_mint != user_lp_token_account.mint {
-            return Err(ErrorCode::MintAccountIsNotMatch.into());
-        }
-        if staking_instance.lp_token_account != gdtc_lp_in_account.key() {
-            return Err(ErrorCode::MintAccountIsNotMatch.into());
-        }
-        if user_instance.user_address != ctx.accounts.authority.key() {
-            return Err(ErrorCode::UserAccountIsNotMatch.into());
-        }
-        // 检查用户 LP Token 账户余额是否足够
-        if user_lp_token_account.amount < lp_staking_number {
-            return Err(ErrorCode::TokenAccountBalanceInsufficient.into());
-        }
-        if staked_info_index > 9 {
-            return Err(ErrorCode::InvalidStakedInfoIndex.into());
-        }
-
-        if stake_type > 2 {
-            return Err(ErrorCode::InvalidStakeType.into());
-        }
-
-        // user_instance.total_deposited_amount = user_instance
-        //     .total_deposited_amount
-        //     .checked_add(lp_staking_number)
-        //     .ok_or(ErrorCode::Overflow)?;
-
-        // 获取质押信息
-        let index = staked_info_index as usize;
-        // 如果已经质押，报错
-        if user_instance.staked_info[index].is_staked {
-            return Err(ErrorCode::UserAlreadyStaked.into());
-        }
-        // 验证用户选择的质押池类型是否有效
-        if stake_type >= staking_instance.pools.len() as u64 {
-            return Err(ErrorCode::InvalidStakeType.into());
-        }
-
-        // 获取当前时间戳并计算质押结束时间
-        let current_timestamp = clock.unix_timestamp as u64;
-        let stake_end_time = generate_release_timestamps(current_timestamp, stake_type);
-
-        // 更新用户账户
-        user_instance.total_deposited_amount = user_instance
-            .total_deposited_amount
-            .checked_add(lp_staking_number)
-            .ok_or(ErrorCode::Overflow)?;
-
-        let staked_info = &mut user_instance.staked_info[index];
-
-        staked_info.deposited_amount = staked_info
-            .deposited_amount
-            .checked_add(lp_staking_number)
-            .ok_or(ErrorCode::Overflow)?;
-        staked_info.stake_type = stake_type;
-        staked_info.is_staked = true;
-        staked_info.stake_start_time = current_timestamp;
-        staked_info.stake_end_time = stake_end_time;
-
-        // 更新质押池的总份额
-        let pool = &mut staking_instance.pools[stake_type as usize];
-        pool.total_shares = pool
-            .total_shares
-            .checked_add(lp_staking_number)
-            .ok_or(ErrorCode::Overflow)?;
-
-        // 更新奖励池
-        update_reward_pool(current_timestamp, staking_instance);
-
-        // 更新用户奖励债务
-        update_reward_debt(staking_instance, user_instance, staked_info_index);
-
-        // 转移 LP Token 到合约的 Vault
-        token::transfer(
-            ctx.accounts.into_transfer_to_vault_context(),
-            lp_staking_number,
-        )?;
-
-        Ok(())
+        instructions::lp_staking::enter::handler(ctx, amount, stake_type, referrer)
     }
 
-    pub fn cancel_staking(ctx: Context<CancelStaking>, staked_info_index: u64) -> Result<()> {
-        // 获取相关账户
-        let staking_instance = &mut ctx.accounts.staking_instance;
-        let user_instance = &mut ctx.accounts.user_instance;
-        let user_lp_token_account = &mut ctx.accounts.user_lp_token_account;
-        let gdtc_lp_in_account = &ctx.accounts.gdtc_lp_in_account;
-
-        if staking_instance.staking_token_mint != user_lp_token_account.mint {
-            return Err(ErrorCode::MintAccountIsNotMatch.into());
-        }
-        if staking_instance.lp_token_account != gdtc_lp_in_account.key() {
-            return Err(ErrorCode::MintAccountIsNotMatch.into());
-        }
-        if user_instance.user_address != ctx.accounts.authority.key() {
-            return Err(ErrorCode::UserAccountIsNotMatch.into());
-        }
-
-        let index = staked_info_index as usize;
-
-        let amount = user_instance.staked_info[index].deposited_amount;
-
-        // 检查用户是否有质押
-        if !user_instance.staked_info[index].is_staked {
-            return Err(ErrorCode::NoStakingToCancel.into());
-        }
-
-        // 获取当前时间戳
-        let clock = Clock::get().map_err(|_| ErrorCode::ClockUnavailable)?;
-        let current_timestamp = clock.unix_timestamp as u64;
-
-        // 检查质押是否到期
-        if current_timestamp < user_instance.staked_info[index].stake_end_time {
-            return Err(ErrorCode::StakingNotMatured.into());
-        }
-        if !user_instance.staked_info[index].can_cancel_stake {
-            return Err(ErrorCode::NeedCliamRewards.into());
-        }
-
-        // 更新奖励池并计算用户的奖励
-        update_reward_pool(current_timestamp, staking_instance);
-
-        // 存储用户的待领取奖励
-        store_pending_reward(staking_instance, user_instance, staked_info_index)?;
-
-        // 获取 PDA 签名者
-        let bump_seed = ctx.bumps.pda_account;
-        let signer_seeds: &[&[&[u8]]] = &[&[crate::LPTOKEN_SEED.as_ref(), &[bump_seed]]];
-
-        // 生成从 GDTC 托管账户到用户 LP Token 账户的转账指令
-        let transfer_instruction = spl_token::instruction::transfer(
-            &ctx.accounts.token_program.key(),
-            &ctx.accounts.gdtc_lp_in_account.key(),
-            &ctx.accounts.user_lp_token_account.key(),
-            &ctx.accounts.pda_account.key(),
-            &[],
-            amount,
-        )?;
-
-        // 执行带签名的 CPI 调用
-        invoke_signed(
-            &transfer_instruction,
-            &[
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.gdtc_lp_in_account.to_account_info(),
-                ctx.accounts.user_lp_token_account.to_account_info(),
-                ctx.accounts.pda_account.to_account_info(),
-            ],
-            signer_seeds,
-        )?;
-
-        // // 更新质押池的总份额
-        let pool =
-            &mut staking_instance.pools[user_instance.staked_info[index].stake_type as usize];
-
-        pool.total_shares = pool
-            .total_shares
-            .checked_sub(amount)
-            .ok_or(ErrorCode::Underflow)?;
-
-        // 更新奖励债务
-        update_reward_debt(staking_instance, user_instance, staked_info_index);
-
-        // 获取用户对应的质押信息
-        let staked_info = &mut user_instance.staked_info[index];
-        // 重置用户的质押状态
-        staked_info.deposited_amount = 0;
-        staked_info.accumulated_reward = 0;
-        staked_info.is_staked = false; // 标记用户未质押
-        staked_info.stake_type = 0;
-        staked_info.reward_debt = 0; // 重置奖励债务
-        staked_info.stake_start_time = 0; // 重置质押开始时间
-        staked_info.stake_end_time = 0; // 重置质押结束时间
-        staked_info.receivedReward = 0;
-        user_instance.staked_info[index].can_cancel_stake = false;
-
-        Ok(())
+    pub fn cancel_staking(ctx: Context<CancelStaking>, record_index: u64) -> Result<()> {
+        instructions::lp_staking::cancel::handler(ctx, record_index)
     }
 
-    pub fn claim_rewards(ctx: Context<ClaimRewards>, staked_info_index: u64) -> Result<()> {
-        // 获取账户实例
-        let staking_instance = &mut ctx.accounts.staking_instance;
-        let user_instance = &mut ctx.accounts.user_instance;
-        let super_instance = &ctx.accounts.super_instance;
-
-        // let user_gdtc_token_account = &mut ctx.accounts.user_gdtc_token_account;
-        let gdtc_reward_out_account = &ctx.accounts.gdtc_reward_out_account;
-        let user_super_gdtc_token_account = &mut ctx.accounts.user_super_gdtc_token_account;
-
-        // 获取当前时间戳
-        let clock = Clock::get().map_err(|_| ErrorCode::ClockUnavailable)?;
-        let current_timestamp = clock.unix_timestamp as u64;
-        let index = staked_info_index as usize;
-        if user_instance.user_address != ctx.accounts.user_gdtc_token_account.owner.key() {
-            return Err(ErrorCode::UserAccountIsNotMatch.into());
-        }
-        // 检查用户是否有质押
-        if !user_instance.staked_info[index].is_staked {
-            msg!(
-                "index: {},staked:{}",
-                staked_info_index,
-                user_instance.staked_info[index].is_staked
-            );
-            return Err(ErrorCode::NoStakingToClaimRewards.into());
-            // return Ok(());
-        }
-        msg!(
-            "index{},staked:{}",
-            index,
-            user_instance.staked_info[index].is_staked
-        );
-        if user_instance.user_superior_token_account != user_super_gdtc_token_account.key() {
-            return Err(ErrorCode::MintAccountIsNotMatch.into());
-        }
-
-        // 更新奖励池并计算用户的奖励
-        update_reward_pool(current_timestamp, staking_instance);
-
-        store_pending_reward(staking_instance, user_instance, staked_info_index)?;
-
-        // 更新用户的奖励债务
-        // update_reward_debt(staking_instance, user_instance, staked_info_index);
-
-        // 计算用户的奖励
-        let mut accumulated_reward = user_instance.staked_info[index].accumulated_reward;
-        if accumulated_reward == 0 {
-            return Err(ErrorCode::NoRewardsToClaim.into());
-        }
-
-        // 检查奖励账户余额是否足够
-        if gdtc_reward_out_account.amount < accumulated_reward {
-            return Err(ErrorCode::InsufficientRewardBalance.into());
-        }
-
-        let bump_seed = ctx.bumps.pda_account;
-        let signer_seeds: &[&[&[u8]]] = &[&[crate::LPTOKEN_SEED.as_ref(), &[bump_seed]]];
-
-        if super_instance.total_deposited_amount > 2000000000 {
-            let transfer_instruction = spl_token::instruction::transfer(
-                &ctx.accounts.token_program.key(),
-                &ctx.accounts.gdtc_reward_out_account.key(),
-                &ctx.accounts.user_super_gdtc_token_account.key(),
-                &ctx.accounts.pda_account.key(),
-                &[],
-                accumulated_reward / 10,
-            )?;
-
-            // 执行带签名的 CPI 调用
-            invoke_signed(
-                &transfer_instruction,
-                &[
-                    ctx.accounts.token_program.to_account_info(),
-                    ctx.accounts.gdtc_reward_out_account.to_account_info(),
-                    ctx.accounts.user_super_gdtc_token_account.to_account_info(),
-                    ctx.accounts.pda_account.to_account_info(),
-                ],
-                signer_seeds,
-            )?;
-            accumulated_reward = accumulated_reward - (accumulated_reward / 10);
-        }
-
-        // 生成从 GDTC 托管账户到用户 LP Token 账户的转账指令
-        let transfer_instruction = spl_token::instruction::transfer(
-            &ctx.accounts.token_program.key(),
-            &ctx.accounts.gdtc_reward_out_account.key(),
-            &ctx.accounts.user_gdtc_token_account.key(),
-            &ctx.accounts.pda_account.key(),
-            &[],
-            accumulated_reward,
-        )?;
-
-        // 执行带签名的 CPI 调用
-        invoke_signed(
-            &transfer_instruction,
-            &[
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.gdtc_reward_out_account.to_account_info(),
-                ctx.accounts.user_gdtc_token_account.to_account_info(),
-                ctx.accounts.pda_account.to_account_info(),
-            ],
-            signer_seeds,
-        )?;
-
-        if current_timestamp >= user_instance.staked_info[index].stake_end_time {
-            if user_instance.staked_info[index].can_cancel_stake == true {
-                msg!(
-                    "can_cancel_stake,{},index : {}",
-                    user_instance.staked_info[index].can_cancel_stake,
-                    index
-                );
-                return Err(ErrorCode::NoRewardsToClaim.into());
-            }
-            user_instance.staked_info[index].can_cancel_stake = true;
-            user_instance.total_deposited_amount = user_instance
-                .total_deposited_amount
-                .checked_sub(user_instance.staked_info[index].deposited_amount)
-                .ok_or(ErrorCode::Overflow)?;
-        }
-
-        // 重置用户累计奖励
-        user_instance.staked_info[index].accumulated_reward = 0;
-
-        user_instance.staked_info[index].receivedReward = user_instance.staked_info[index]
-            .receivedReward
-            .checked_add(accumulated_reward)
-            .ok_or(ErrorCode::Overflow)?;
-        Ok(())
+    pub fn claim_rewards(ctx: Context<ClaimRewards>) -> Result<()> {
+        instructions::lp_staking::claim::handler(ctx)
     }
 
+    // NFT 质押相关指令
+    pub fn initialize_nft_staking(ctx: Context<InitializeNftStaking>) -> Result<()> {
+        instructions::nft_staking::initialize::handler(ctx)
+    }
+
+    pub fn initialize_nft_user(ctx: Context<InitializeNftUser>) -> Result<()> {
+        instructions::nft_staking::initialize_user::handler(ctx)
+    }
+
+    pub fn stake_nft(
+        ctx: Context<StakeNft>,
+        stake_type: u64,
+        rarity: u64,
+    ) -> Result<()> {
+        instructions::nft_staking::stake::handler(ctx, stake_type, rarity)
+    }
+
+    pub fn unstake_nft(ctx: Context<UnstakeNft>, record_index: u64) -> Result<()> {
+        instructions::nft_staking::unstake::handler(ctx, record_index)
+    }
+
+    pub fn claim_nft_rewards(ctx: Context<ClaimNftRewards>) -> Result<()> {
+        instructions::nft_staking::claim::handler(ctx)
+    }
 }
+
+// 导出所有指令的上下文结构
+pub use instructions::lp_staking::{
+    initialize::InitializeStaking,
+    initialize_user::InitializeUser,
+    enter::EnterStaking,
+    cancel::CancelStaking,
+    claim::ClaimRewards,
+};
+
+pub use instructions::nft_staking::{
+    initialize::InitializeNftStaking,
+    initialize_user::InitializeNftUser,
+    stake::StakeNft,
+    unstake::UnstakeNft,
+    claim::ClaimNftRewards,
+};
 
 #[error_code]
 pub enum ErrorCode {
