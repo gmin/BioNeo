@@ -1,4 +1,4 @@
-# BioNeo Staking Contract
+# BioNeo-Healthy
 
 BioNeo，创新的区块链+AI音乐健康平台
 
