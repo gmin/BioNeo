@@ -1,9 +1,9 @@
 pub mod initialize;
-pub mod stake;
-pub mod unstake;
+pub mod enter;
+pub mod cancel;
 pub mod claim;
 
 pub use initialize::*;
-pub use stake::*;
-pub use unstake::*;
+pub use enter::*;
+pub use cancel::*;
 pub use claim::*; 
