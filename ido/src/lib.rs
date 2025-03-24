@@ -14,6 +14,8 @@ pub mod bioneo_ido {
         end_time: i64,
         price_per_share: u64,
         total_shares: u64,
+        refund_start_time: i64,
+        refund_end_time: i64,
     ) -> Result<()> {
         let ido_state = &mut ctx.accounts.ido_state;
         ido_state.authority = ctx.accounts.authority.key();
@@ -25,6 +27,9 @@ pub mod bioneo_ido {
         ido_state.sold_shares = 0;
         ido_state.total_raised = 0;
         ido_state.token_amount_per_share = ctx.accounts.token_state.ido_amount / total_shares;
+        ido_state.refund_start_time = refund_start_time;
+        ido_state.refund_end_time = refund_end_time;
+        ido_state.allow_refund = true;
 
         Ok(())
     }
@@ -120,6 +125,48 @@ pub mod bioneo_ido {
 
         Ok(())
     }
+
+    // 退款
+    pub fn refund(ctx: Context<Refund>) -> Result<()> {
+        let ido_state = &ctx.accounts.ido_state;
+        let participation = &ctx.accounts.participation;
+        let current_time = Clock::get()?.unix_timestamp;
+
+        // 检查是否在退款时间范围内
+        require!(
+            current_time >= ido_state.refund_start_time && 
+            current_time <= ido_state.refund_end_time,
+            IdoError::RefundNotActive
+        );
+
+        // 检查是否允许退款
+        require!(ido_state.allow_refund, IdoError::RefundNotAllowed);
+
+        // 检查是否已经领取过代币
+        require!(participation.claimed_amount == 0, IdoError::AlreadyClaimed);
+
+        // 转移 USDC 回用户
+        let transfer_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            token::Transfer {
+                from: ctx.accounts.treasury_usdc_account.to_account_info(),
+                to: ctx.accounts.user_usdc_account.to_account_info(),
+                authority: ctx.accounts.ido_state.to_account_info(),
+                token_program: ctx.accounts.token_program.to_account_info(),
+            },
+        );
+
+        token::transfer(transfer_ctx, participation.payment_amount)?;
+
+        // 更新众筹状态
+        let ido_state = &mut ctx.accounts.ido_state;
+        ido_state.sold_shares = ido_state.sold_shares.checked_sub(participation.shares)
+            .ok_or(IdoError::ArithmeticOverflow)?;
+        ido_state.total_raised = ido_state.total_raised.checked_sub(participation.payment_amount)
+            .ok_or(IdoError::ArithmeticOverflow)?;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -184,6 +231,26 @@ pub struct ClaimTokens<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct Refund<'info> {
+    #[account(mut)]
+    pub ido_state: Account<'info, IdoState>,
+    
+    #[account(mut)]
+    pub participation: Account<'info, Participation>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(mut)]
+    pub user_usdc_account: Account<'info, TokenAccount>,
+    
+    #[account(mut)]
+    pub treasury_usdc_account: Account<'info, TokenAccount>,
+    
+    pub token_program: Program<'info, Token>,
+}
+
 #[account]
 pub struct IdoState {
     pub authority: Pubkey,
@@ -195,10 +262,16 @@ pub struct IdoState {
     pub sold_shares: u64,
     pub total_raised: u64,
     pub token_amount_per_share: u64,
+    /// 退款开始时间
+    pub refund_start_time: i64,
+    /// 退款结束时间
+    pub refund_end_time: i64,
+    /// 是否允许退款
+    pub allow_refund: bool,
 }
 
 impl IdoState {
-    pub const LEN: usize = 32 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
+    pub const LEN: usize = 32 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1;
 }
 
 #[account]
@@ -227,4 +300,13 @@ pub enum IdoError {
     
     #[msg("算术溢出")]
     ArithmeticOverflow,
+
+    #[msg("不在退款时间范围内")]
+    RefundNotActive,
+
+    #[msg("不允许退款")]
+    RefundNotAllowed,
+
+    #[msg("已经领取过代币")]
+    AlreadyClaimed,
 } 
