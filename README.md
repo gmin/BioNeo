@@ -105,42 +105,64 @@ BioNeo，创新的区块链+AI音乐健康平台
 ## 项目结构
 
 ```
-.
-├── lib.rs           # 主合约逻辑
-├── constants.rs     # 常量定义
-├── tools.rs         # 工具函数
-├── errors/          # 错误处理
-│   ├── mod.rs
-│   ├── lp_staking.rs
-│   └── nft_staking.rs
-├── structures/      # 数据结构定义
-│   ├── mod.rs
-│   ├── lp_staking/  # LP 质押相关结构
-│   │   ├── mod.rs
-│   │   ├── instance.rs
-│   │   ├── pool.rs
-│   │   └── user.rs
-│   └── nft_staking/ # NFT 质押相关结构
-│       ├── mod.rs
-│       ├── instance.rs
-│       ├── pool.rs
-│       ├── user.rs
-│       └── record.rs
-└── instructions/    # 指令实现
-    ├── mod.rs
-    ├── lp_staking/  # LP 质押相关指令
-    │   ├── mod.rs
-    │   ├── initialize.rs
-    │   ├── enter.rs
-    │   ├── cancel.rs
-    │   └── claim.rs
-    └── nft_staking/ # NFT 质押相关指令
-        ├── mod.rs
-        ├── initialize.rs
-        ├── stake.rs
-        ├── unstake.rs
-        └── claim.rs
+bioneo/
+├── token/                 # 代币合约
+│   ├── src/              # 源代码
+│   │   └── lib.rs        # 代币合约实现
+│   ├── tests/            # 测试文件
+│   │   └── token.ts      # 代币合约测试
+│   └── README.md         # 代币合约文档
+│
+├── whitelist/            # 白名单合约
+│   ├── src/              # 源代码
+│   │   └── lib.rs        # 白名单合约实现
+│   ├── tests/            # 测试文件
+│   │   └── whitelist.ts  # 白名单合约测试
+│   └── README.md         # 白名单合约文档
+│
+├── ido/                  # IDO 合约
+│   ├── src/              # 源代码
+│   │   └── lib.rs        # IDO 合约实现
+│   ├── tests/            # 测试文件
+│   │   └── ido.ts        # IDO 合约测试
+│   └── README.md         # IDO 合约文档
+│
+└── README.md             # 项目总文档
 ```
+
+## 合约说明
+
+### 1. 代币合约 (Token)
+- 管理代币的铸造、转移和销毁
+- 代币分配：
+  - 国库：85%
+  - 白名单：5%
+  - IDO：10%
+- 主要功能：
+  - 初始化代币
+  - 铸造代币
+  - 转移代币
+  - 销毁代币
+
+### 2. 白名单合约 (Whitelist)
+- 管理白名单用户的代币释放
+- 代币分配：
+  - 白名单 1：2.5%
+  - 白名单 2：1.5%
+  - 白名单 3：1.0%
+- 主要功能：
+  - 初始化白名单
+  - 代币释放
+  - 查询可领取数量
+
+### 3. IDO 合约 (IDO)
+- 管理代币的众筹发行
+- 代币分配：10%
+- 主要功能：
+  - 初始化众筹
+  - 参与众筹
+  - 领取代币
+  - 查询可领取数量
 
 ## 使用说明
 
