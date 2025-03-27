@@ -32,7 +32,7 @@ describe("token", () => {
       provider.wallet.payer,
       provider.wallet.publicKey,
       null,
-      9
+      6
     );
 
     // 创建国库代币账户

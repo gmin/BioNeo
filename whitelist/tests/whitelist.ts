@@ -41,7 +41,7 @@ describe("whitelist", () => {
       provider.wallet.payer,
       provider.wallet.publicKey,
       null,
-      9
+      6
     );
 
     // 创建白名单代币账户

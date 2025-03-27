@@ -31,7 +31,7 @@ describe("ido", () => {
       provider.wallet.payer,
       provider.wallet.publicKey,
       null,
-      9
+      6
     );
 
     // 创建 IDO 代币账户
